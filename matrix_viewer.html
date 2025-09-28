@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>WS2812 16×16 – USB Live Viewer</title>
+<style>
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:#111; color:#eee; display:flex; flex-direction:column; align-items:center; gap:12px; padding:24px; }
+  #canvas { image-rendering: pixelated; border:1px solid #333; }
+  button { padding:10px 16px; font-weight:600; border-radius:8px; border:0; background:#2d6cdf; color:#fff; cursor:pointer; }
+  button:disabled { opacity:0.5; cursor:not-allowed; }
+  .row { display:flex; gap:12px; align-items:center; }
+  .log { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color:#aaa; font-size:12px; }
+</style>
+</head>
+<body>
+  <h1>WS2812 16×16 – USB Live Viewer</h1>
+
+  <div class="row">
+    <button id="connect">Connect</button>
+    <span class="log" id="status">not connected</span>
+  </div>
+
+  <!-- Scoreboard -->
+  <div class="row" style="gap:18px">
+    <div>
+      <strong>P1</strong> <span id="p1Pct">0%</span>
+      <small class="log">(<span id="p1Count">0</span>/256)</small>
+    </div>
+    <div>
+      <strong>P2</strong> <span id="p2Pct">0%</span>
+      <small class="log">(<span id="p2Count">0</span>/256)</small>
+    </div>
+  </div>
+
+  <canvas id="canvas" width="160" height="160"></canvas>
+
+  <script>
+    // ----- UI refs -----
+    const p1PctEl   = document.getElementById('p1Pct');
+    const p2PctEl   = document.getElementById('p2Pct');
+    const p1CountEl = document.getElementById('p1Count');
+    const p2CountEl = document.getElementById('p2Count');
+
+    const btn = document.getElementById('connect');
+    const statusEl = document.getElementById('status');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { alpha: false });
+
+    // ----- display sizing -----
+    const scale = 10; // internal pixel scale (kept)
+    const zoom  = 3;  // CSS zoom only
+    let logicalW = 16, logicalH = 16;
+    canvas.style.width  = (logicalW * scale * zoom) + 'px';
+    canvas.style.height = (logicalH * scale * zoom) + 'px';
+
+    // Reusable ImageData (allocated once per size)
+    let img = ctx.createImageData(logicalW * scale, logicalH * scale);
+
+    // ----- render loop (draw latest frame only) -----
+    let latestFrame = null;    // Uint8Array of RGBs (W*H*3)
+    let latestW = logicalW, latestH = logicalH;
+
+    function drawLatest() {
+      if (latestFrame && (latestW === logicalW) && (latestH === logicalH)) {
+        // fill img.data with scaled pixels
+        const W = logicalW, H = logicalH;
+        const rowStride = W * scale * 4; // RGBA stride per destination row
+        let src = 0;
+
+        // Write per LED: fill a scale×scale block in img.data
+        // This avoids recreating ImageData or using heavy DOM calls per LED.
+        for (let y = 0; y < H; y++) {
+          const yBase = y * scale;
+          for (let x = 0; x < W; x++) {
+            const r = latestFrame[src++], g = latestFrame[src++], b = latestFrame[src++];
+            // precompute one horizontal scanline for the block
+            const line = new Uint8ClampedArray(scale * 4);
+            for (let dx = 0, j = 0; dx < scale; dx++, j += 4) {
+              line[j] = r; line[j+1] = g; line[j+2] = b; line[j+3] = 255;
+            }
+            // blit the block
+            for (let dy = 0; dy < scale; dy++) {
+              const destRow = ( (yBase + dy) * rowStride );
+              const destCol = ( (x * scale) * 4 );
+              img.data.set(line, destRow + destCol);
+            }
+          }
+        }
+        ctx.putImageData(img, 0, 0);
+      }
+      requestAnimationFrame(drawLatest);
+    }
+    requestAnimationFrame(drawLatest);
+
+    // ----- stats (throttled DOM updates) -----
+    let pendingP1 = 0, pendingP2 = 0;
+    let lastStatsUpdate = 0;
+    function updateStatsThrottled() {
+      const now = performance.now();
+      if (now - lastStatsUpdate < 100) return; // 10 Hz UI update cap
+      lastStatsUpdate = now;
+      const total = logicalW * logicalH;
+      const p1Pct = (pendingP1 / total) * 100;
+      const p2Pct = (pendingP2 / total) * 100;
+      p1PctEl.textContent = p1Pct.toFixed(1) + '%';
+      p2PctEl.textContent = p2Pct.toFixed(1) + '%';
+      p1CountEl.textContent = pendingP1;
+      p2CountEl.textContent = pendingP2;
+    }
+
+    // ----- web serial -----
+    const supported = 'serial' in navigator;
+    let port, reader;
+
+    function log(s) { statusEl.textContent = s; }
+
+    if (!supported) {
+      log('Your browser does not support Web Serial. Use Chrome/Edge desktop.');
+      btn.disabled = true;
+    }
+
+    btn.addEventListener('click', async () => {
+      try {
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 1000000 });
+        reader = port.readable.getReader();
+        btn.disabled = true;
+        log('connected – streaming…');
+        readLoop();
+      } catch (e) {
+        console.error(e);
+        log('failed to open port');
+      }
+    });
+
+    // Packet format:
+    // LEDS: 'L','E','D','S', W(1), H(1), serp(1), payload W*H*3 bytes
+    // STAT: 'S','T','A','T', p1Count(LE16), p2Count(LE16)
+    async function readLoop() {
+      const HDR_LEDS = new TextEncoder().encode('LEDS');
+      const HDR_STAT = new TextEncoder().encode('STAT');
+
+      let buf = new Uint8Array(0);
+
+      const syncToHeader = () => {
+        // We only check the first few bytes for either header, otherwise drop one byte
+        if (buf.length < 4) return false;
+        const h0 = buf[0], h1 = buf[1], h2 = buf[2], h3 = buf[3];
+        if (h0===HDR_LEDS[0] && h1===HDR_LEDS[1] && h2===HDR_LEDS[2] && h3===HDR_LEDS[3]) return true;
+        if (h0===HDR_STAT[0] && h1===HDR_STAT[1] && h2===HDR_STAT[2] && h3===HDR_STAT[3]) return true;
+        // drop one byte and try again next tick
+        buf = buf.subarray(1);
+        return false;
+      };
+
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (!value) continue;
+
+          // append to buffer
+          const merged = new Uint8Array(buf.length + value.length);
+          merged.set(buf, 0); merged.set(value, buf.length);
+          buf = merged;
+
+          // consume packets sequentially
+          let progressed = true;
+          while (progressed) {
+            progressed = false;
+
+            if (!syncToHeader()) break;
+            if (buf.length < 4) break;
+
+            // STAT?
+            if (buf[0]===HDR_STAT[0] && buf[1]===HDR_STAT[1] && buf[2]===HDR_STAT[2] && buf[3]===HDR_STAT[3]) {
+              if (buf.length < 8) break; // wait for full STAT
+              const c1 = buf[4] | (buf[5] << 8);
+              const c2 = buf[6] | (buf[7] << 8);
+              pendingP1 = c1; pendingP2 = c2;
+              updateStatsThrottled();
+              buf = buf.subarray(8);
+              progressed = true;
+              continue;
+            }
+
+            // LEDS?
+            if (buf[0]===HDR_LEDS[0] && buf[1]===HDR_LEDS[1] && buf[2]===HDR_LEDS[2] && buf[3]===HDR_LEDS[3]) {
+              if (buf.length < 7) break; // need meta
+              const W = buf[4], H = buf[5]; /* const serp = buf[6]; */
+              const frameBytes = W * H * 3;
+              const total = 7 + frameBytes;
+              if (buf.length < total) break; // wait for full frame
+
+              // If size changed, rebuild canvas & ImageData (once)
+              if (W !== logicalW || H !== logicalH) {
+                logicalW = W; logicalH = H;
+                canvas.width  = W * scale;
+                canvas.height = H * scale;
+                canvas.style.width  = (W * scale * zoom) + 'px';
+                canvas.style.height = (H * scale * zoom) + 'px';
+                img = ctx.createImageData(W * scale, H * scale);
+              }
+
+              latestW = W; latestH = H;
+              latestFrame = buf.subarray(7, 7 + frameBytes); // points into buf, so copy:
+              latestFrame = new Uint8Array(latestFrame);     // make independent
+              buf = buf.subarray(total);
+              progressed = true;
+              continue;
+            }
+          }
+        }
+      } catch (e) {
+        console.error(e);
+        log('disconnected / read error');
+      } finally {
+        try { reader.releaseLock(); } catch {}
+        try { await port.close(); } catch {}
+        btn.disabled = false;
+        log('disconnected');
+      }
+    }
+  </script>
+</body>
+</html>
