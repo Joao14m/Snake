@@ -20,21 +20,23 @@ export default function App() {
   }, []);
 
   return (
-    <main style={{ fontFamily: "system-ui, sans-serif", maxWidth: 520, margin: "4rem auto", textAlign: "center" }}>
-      <h1>Territory Game Scoreboard</h1>
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginTop:24 }}>
-        <section style={{ padding:24, border:"1px solid #444", borderRadius:16 }}>
-          <h2>Team A</h2>
-          <p style={{ fontSize:56, margin:0 }}>{score.teamA}</p>
-        </section>
-        <section style={{ padding:24, border:"1px solid #444", borderRadius:16 }}>
-          <h2>Team B</h2>
-          <p style={{ fontSize:56, margin:0 }}>{score.teamB}</p>
-        </section>
-      </div>
-      <p style={{ marginTop:24, opacity:0.7 }}>
-        Last update: {new Date(score.lastUpdate).toLocaleTimeString()}
-      </p>
-    </main>
+    <body style={{ display: "flex", justifyContent: "center"}}>
+      <main style={{ fontFamily: "system-ui, sans-serif", maxWidth: 520, margin: "4rem auto", textAlign: "center" }}>
+        <h1>Territory Game Scoreboard</h1>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginTop:24 }}>
+          <section style={{ padding:24, border:"1px solid #444", borderRadius:16 }}>
+            <h2>Team A</h2>
+            <p style={{ fontSize:56, margin:0 }}>{score.teamA}</p>
+          </section>
+          <section style={{ padding:24, border:"1px solid #444", borderRadius:16 }}>
+            <h2>Team B</h2>
+            <p style={{ fontSize:56, margin:0 }}>{score.teamB}</p>
+          </section>
+        </div>
+        <p style={{ marginTop:24, opacity:0.7 }}>
+          Last update: {new Date(score.lastUpdate).toLocaleTimeString()}
+        </p>
+      </main>
+    </body>
   );
 }
