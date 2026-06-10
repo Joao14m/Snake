@@ -108,10 +108,3 @@ STAT : 'S','T','A','T', p1Count(LE16), p2Count(LE16)          // tile counts
 * Fitting the entire game state into 256 bytes of grid memory while managing several simultaneous timed status effects.
 * Making joystick input feel responsive: raw analog reads are noisy, so calibration, deadzones, and hysteresis all had to work together.
 * Keeping movement speed consistent without `delay()` blocking the render loop, which is what led us to `millis()` based timing.
-
-## What's next
-
-* Sound effects and a buzzer for pickups and round end.
-* Support for more players and larger matrices.
-* Firmware serial streaming so the live viewer works out of the box.
-* Additional power ups and selectable game modes.
